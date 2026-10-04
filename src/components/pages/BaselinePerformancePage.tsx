@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useApp } from '../../context/useApp';
 import { KpiCard } from '../ui/KpiCard';
 import { ERROR_ANALYSIS_CASES } from '../../data/mockData';
 import { 

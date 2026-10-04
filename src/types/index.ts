@@ -1,4 +1,4 @@
-export type ResourceStatus = 'READY' | 'AT_RISK' | 'DELAYED';
+export type ResourceStatus = 'READY' | 'NOT_READY' | 'AT_RISK' | 'DELAYED' | 'UNKNOWN';
 export type SessionStatus = 'READY' | 'AT_RISK' | 'DELAYED' | 'ESCALATED';
 export type AlertPriority = 'NORMAL' | 'WARNING' | 'URGENT' | 'ESCALATED';
 export type AlertStatus = 'OPEN' | 'IN_PROGRESS' | 'RESOLVED';
@@ -43,6 +43,15 @@ export interface AlertNote {
   author: string;
 }
 
+export interface EscalationHistory {
+  id: string;
+  timestamp: string;
+  previousPriority: AlertPriority;
+  newPriority: AlertPriority;
+  reason: string;
+  triggeredBy: string;
+}
+
 export interface OperationalAlert {
   id: string; // e.g. "ALT-301"
   sessionId: string;
@@ -54,6 +63,11 @@ export interface OperationalAlert {
   dueTime: string;
   status: AlertStatus;
   createdTime: string;
+  createdAt: string; // ISO string e.g. "2026-10-04T10:00:00.000Z"
+  escalationLevel: AlertPriority;
+  escalatedAt?: string;
+  resolvedAt?: string;
+  escalationHistory: EscalationHistory[];
   followUpNotes: AlertNote[];
 }
 
@@ -64,6 +78,45 @@ export interface FailureScenario {
   description: string;
   affectedSessionId: string;
   expectedOutcome: string[];
+}
+
+export interface DeterministicTestCase {
+  id: string;
+  title: string;
+  name: string;
+  description: string;
+  purpose: string;
+  affectedSessionId: string;
+  scheduledStartTime: string;
+  initialResourceState: {
+    patientReady: string;
+    staffReady: string;
+    equipmentReady: string;
+    sterileSuppliesReady: string;
+  };
+  expected: {
+    primaryBlocker: MainBlockerType;
+    sessionStatus: SessionStatus;
+    allResourcesReadyTime: string;
+    avoidableIdleMinutes: number;
+    alertPriority: AlertPriority;
+    alertTitle: string;
+    expectedOutcome: string[];
+  };
+}
+
+export interface TestExecutionResult {
+  testId: string;
+  passed: boolean;
+  executedAt: string;
+  actual: {
+    primaryBlocker: MainBlockerType;
+    sessionStatus: SessionStatus;
+    allResourcesReadyTime: string;
+    avoidableIdleMinutes: number;
+    alertPriority: AlertPriority;
+  };
+  differences: string[];
 }
 
 export interface ReadinessAnalysisResult {

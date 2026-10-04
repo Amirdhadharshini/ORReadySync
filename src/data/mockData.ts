@@ -1,4 +1,4 @@
-import type { TheatreSession, OperationalAlert, FailureScenario, AuthUser } from '../types';
+import type { TheatreSession, OperationalAlert, FailureScenario, AuthUser, DeterministicTestCase } from '../types';
 
 export interface DemoAccount extends AuthUser {
   password: string;
@@ -311,6 +311,10 @@ export const INITIAL_SESSIONS: TheatreSession[] = [
   }
 ];
 
+const twentyMinsAgoISO = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+const fortyMinsAgoISO = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+const fiftyMinsAgoISO = new Date(Date.now() - 50 * 60 * 1000).toISOString();
+
 export const INITIAL_ALERTS: OperationalAlert[] = [
   {
     id: 'ALT-301',
@@ -323,6 +327,26 @@ export const INITIAL_ALERTS: OperationalAlert[] = [
     dueTime: '10:28 AM',
     status: 'OPEN',
     createdTime: '09:42 AM',
+    createdAt: thirtyMinsAgo(32),
+    escalationLevel: 'URGENT',
+    escalationHistory: [
+      {
+        id: 'ESC-301-1',
+        timestamp: '09:42 AM',
+        previousPriority: 'NORMAL',
+        newPriority: 'WARNING',
+        reason: 'Initial alert creation for equipment readiness hold',
+        triggeredBy: 'OR ReadySync Engine'
+      },
+      {
+        id: 'ESC-301-2',
+        timestamp: '09:57 AM',
+        previousPriority: 'WARNING',
+        newPriority: 'URGENT',
+        reason: 'Urgent SLA exceeded (30m+ unresolved)',
+        triggeredBy: 'SLA Time-Decay Engine'
+      }
+    ],
     followUpNotes: [
       {
         id: 'N-1',
@@ -343,6 +367,34 @@ export const INITIAL_ALERTS: OperationalAlert[] = [
     dueTime: '12:05 PM',
     status: 'OPEN',
     createdTime: '10:50 AM',
+    createdAt: fiftyMinsAgoISO,
+    escalationLevel: 'ESCALATED',
+    escalationHistory: [
+      {
+        id: 'ESC-302-1',
+        timestamp: '10:50 AM',
+        previousPriority: 'NORMAL',
+        newPriority: 'WARNING',
+        reason: 'Patient transfer delay alert dispatched',
+        triggeredBy: 'OR ReadySync Engine'
+      },
+      {
+        id: 'ESC-302-2',
+        timestamp: '11:05 AM',
+        previousPriority: 'WARNING',
+        newPriority: 'URGENT',
+        reason: 'Warning SLA exceeded (15m+ unresolved)',
+        triggeredBy: 'SLA Time-Decay Engine'
+      },
+      {
+        id: 'ESC-302-3',
+        timestamp: '11:35 AM',
+        previousPriority: 'URGENT',
+        newPriority: 'ESCALATED',
+        reason: 'Escalation SLA exceeded (45m+ unresolved)',
+        triggeredBy: 'SLA Time-Decay Engine'
+      }
+    ],
     followUpNotes: [
       {
         id: 'N-2',
@@ -363,6 +415,26 @@ export const INITIAL_ALERTS: OperationalAlert[] = [
     dueTime: '01:38 PM',
     status: 'IN_PROGRESS',
     createdTime: '11:15 AM',
+    createdAt: fortyMinsAgoISO,
+    escalationLevel: 'URGENT',
+    escalationHistory: [
+      {
+        id: 'ESC-303-1',
+        timestamp: '11:15 AM',
+        previousPriority: 'NORMAL',
+        newPriority: 'WARNING',
+        reason: 'Sterile supplies delay created',
+        triggeredBy: 'OR ReadySync Engine'
+      },
+      {
+        id: 'ESC-303-2',
+        timestamp: '11:45 AM',
+        previousPriority: 'WARNING',
+        newPriority: 'URGENT',
+        reason: 'Urgent SLA exceeded (30m+ unresolved)',
+        triggeredBy: 'SLA Time-Decay Engine'
+      }
+    ],
     followUpNotes: [
       {
         id: 'N-3',
@@ -383,9 +455,25 @@ export const INITIAL_ALERTS: OperationalAlert[] = [
     dueTime: '09:22 AM',
     status: 'OPEN',
     createdTime: '08:50 AM',
+    createdAt: twentyMinsAgoISO,
+    escalationLevel: 'WARNING',
+    escalationHistory: [
+      {
+        id: 'ESC-304-1',
+        timestamp: '08:50 AM',
+        previousPriority: 'NORMAL',
+        newPriority: 'WARNING',
+        reason: 'Staff delay alert logged',
+        triggeredBy: 'OR ReadySync Engine'
+      }
+    ],
     followUpNotes: []
   }
 ];
+
+function thirtyMinsAgo(mins: number): string {
+  return new Date(Date.now() - mins * 60 * 1000).toISOString();
+}
 
 export const FAILURE_SCENARIOS: FailureScenario[] = [
   {
@@ -443,6 +531,157 @@ export const FAILURE_SCENARIOS: FailureScenario[] = [
       'AI identifies "Sterile Supplies" as Main Blocker.',
       'Urgent notification sent to Sterile Processing Supervisor.'
     ]
+  }
+];
+
+export const DETERMINISTIC_TEST_CASES: DeterministicTestCase[] = [
+  {
+    id: 'TEST-001',
+    title: 'TEST-001',
+    name: 'Patient Transit Delay',
+    description: 'Verifies that patient arrival delay past scheduled start is accurately detected as primary readiness blocker with correct idle minutes calculation.',
+    purpose: 'Verify that delayed patient arrival is correctly detected as the primary readiness blocker and triggers appropriate session delay and SLA escalation.',
+    affectedSessionId: 'SES-104',
+    scheduledStartTime: '10:00 AM',
+    initialResourceState: {
+      patientReady: '10:20 AM',
+      staffReady: '09:45 AM',
+      equipmentReady: '09:50 AM',
+      sterileSuppliesReady: '09:40 AM'
+    },
+    expected: {
+      primaryBlocker: 'Patient',
+      sessionStatus: 'DELAYED',
+      allResourcesReadyTime: '10:20 AM',
+      avoidableIdleMinutes: 20,
+      alertPriority: 'NORMAL',
+      alertTitle: 'Patient transfer delayed',
+      expectedOutcome: [
+        'Primary Blocker identified as Patient',
+        'Session Status set to DELAYED',
+        'All Resources Ready Time calculated as 10:20 AM',
+        'Avoidable Idle Time calculated as 20 minutes',
+        'Operational Alert initially created at NORMAL priority'
+      ]
+    }
+  },
+  {
+    id: 'TEST-002',
+    title: 'TEST-002',
+    name: 'Missing Autoclave Equipment Batch',
+    description: 'Simulates missing autoclave biomedical batch delay holding up OR startup until 10:30 AM.',
+    purpose: 'Verify that missing autoclave equipment batch is flagged as primary blocker and generates 30 minutes of avoidable idle time.',
+    affectedSessionId: 'SES-103',
+    scheduledStartTime: '10:00 AM',
+    initialResourceState: {
+      patientReady: '09:45 AM',
+      staffReady: '09:50 AM',
+      equipmentReady: '10:30 AM',
+      sterileSuppliesReady: '09:40 AM'
+    },
+    expected: {
+      primaryBlocker: 'Equipment',
+      sessionStatus: 'DELAYED',
+      allResourcesReadyTime: '10:30 AM',
+      avoidableIdleMinutes: 30,
+      alertPriority: 'URGENT',
+      alertTitle: 'Required autoclave equipment batch unavailable',
+      expectedOutcome: [
+        'Primary Blocker identified as Equipment',
+        'Session Status set to DELAYED',
+        'All Resources Ready Time calculated as 10:30 AM',
+        'Avoidable Idle Time calculated as 30 minutes',
+        'Alert generated for autoclave equipment batch delay'
+      ]
+    }
+  },
+  {
+    id: 'TEST-003',
+    title: 'TEST-003',
+    name: 'Staff Not Ready',
+    description: 'Evaluates surgical team delay where Anaesthesiologist/Surgical team arrives at 10:25 AM for a 10:00 AM scheduled start.',
+    purpose: 'Verify that delayed staff readiness correctly calculates 25 minutes of idle time and flags Staff as primary bottleneck.',
+    affectedSessionId: 'SES-102',
+    scheduledStartTime: '10:00 AM',
+    initialResourceState: {
+      patientReady: '09:45 AM',
+      staffReady: '10:25 AM',
+      equipmentReady: '09:50 AM',
+      sterileSuppliesReady: '09:40 AM'
+    },
+    expected: {
+      primaryBlocker: 'Staff',
+      sessionStatus: 'DELAYED',
+      allResourcesReadyTime: '10:25 AM',
+      avoidableIdleMinutes: 25,
+      alertPriority: 'URGENT',
+      alertTitle: 'Staff team not ready for scheduled start',
+      expectedOutcome: [
+        'Primary Blocker identified as Staff',
+        'Session Status set to DELAYED',
+        'All Resources Ready Time calculated as 10:25 AM',
+        'Avoidable Idle Time calculated as 25 minutes'
+      ]
+    }
+  },
+  {
+    id: 'TEST-004',
+    title: 'TEST-004',
+    name: 'Sterile Supplies Delayed',
+    description: 'Evaluates delayed biological indicator indicator verification holding up sterile supply tray release until 10:15 AM.',
+    purpose: 'Verify that delayed sterile supplies tray is correctly detected as the main blocker causing 15 minutes of idle time.',
+    affectedSessionId: 'SES-105',
+    scheduledStartTime: '10:00 AM',
+    initialResourceState: {
+      patientReady: '09:45 AM',
+      staffReady: '09:50 AM',
+      equipmentReady: '09:55 AM',
+      sterileSuppliesReady: '10:15 AM'
+    },
+    expected: {
+      primaryBlocker: 'Sterile Supplies',
+      sessionStatus: 'DELAYED',
+      allResourcesReadyTime: '10:15 AM',
+      avoidableIdleMinutes: 15,
+      alertPriority: 'URGENT',
+      alertTitle: 'Sterile supply tray delayed',
+      expectedOutcome: [
+        'Primary Blocker identified as Sterile Supplies',
+        'Session Status set to DELAYED',
+        'All Resources Ready Time calculated as 10:15 AM',
+        'Avoidable Idle Time calculated as 15 minutes'
+      ]
+    }
+  },
+  {
+    id: 'TEST-005',
+    title: 'TEST-005',
+    name: 'All Resources Ready',
+    description: 'Positive control test verifying system behavior when all 4 resources are ready before the 10:00 AM scheduled start.',
+    purpose: 'Verify that when all resources are ready prior to start, no blocker is flagged, status is READY, and avoidable idle time is 0 minutes.',
+    affectedSessionId: 'SES-101',
+    scheduledStartTime: '10:00 AM',
+    initialResourceState: {
+      patientReady: '09:40 AM',
+      staffReady: '09:45 AM',
+      equipmentReady: '09:50 AM',
+      sterileSuppliesReady: '09:35 AM'
+    },
+    expected: {
+      primaryBlocker: 'None',
+      sessionStatus: 'READY',
+      allResourcesReadyTime: '09:50 AM',
+      avoidableIdleMinutes: 0,
+      alertPriority: 'NORMAL',
+      alertTitle: 'All resources ready',
+      expectedOutcome: [
+        'Primary Blocker identified as None',
+        'Session Status set to READY',
+        'All Resources Ready Time calculated as 09:50 AM',
+        'Avoidable Idle Time calculated as 0 minutes',
+        'No false positive blocker or delay alerts flagged'
+      ]
+    }
   }
 ];
 

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useApp } from '../../context/useApp';
 import { StatusBadge } from '../ui/StatusBadge';
 import type { AlertPriority, AlertStatus, OperationalAlert } from '../../types';
+import { getSLAInfo } from '../../services/slaEngine';
 import { 
   BellRing, 
   CheckCircle2, 
@@ -9,11 +10,14 @@ import {
   ArrowUpRight,
   Check,
   Plus,
-  X
+  X,
+  RotateCcw,
+  Clock,
+  History
 } from 'lucide-react';
 
 export const AlertsEscalationPage: React.FC = () => {
-  const { alerts, sessions, updateAlert, addAlertNote, resolveAlert, navigateToSynchronizerForSession } = useApp();
+  const { alerts, sessions, updateAlert, addAlertNote, resolveAlert, recheckSLA, navigateToSynchronizerForSession } = useApp();
   const [filterStatus, setFilterStatus] = useState<string>('ALL_OPEN');
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [newNoteText, setNewNoteText] = useState<string>('');
@@ -32,6 +36,7 @@ export const AlertsEscalationPage: React.FC = () => {
   });
 
   const selectedAlert = alerts.find(a => a.id === selectedAlertId);
+  const selectedSLAInfo = selectedAlert ? getSLAInfo(selectedAlert) : null;
 
   const handleAddNote = (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,6 +55,7 @@ export const AlertsEscalationPage: React.FC = () => {
     if (!newAlertIssue.trim()) return;
 
     const targetSession = sessions.find(s => s.id === newAlertSessionId) || sessions[0];
+    const now = new Date();
     const createdAlert: OperationalAlert = {
       id: `ALT-${Math.floor(100 + Math.random() * 900)}`,
       sessionId: targetSession.id,
@@ -57,14 +63,26 @@ export const AlertsEscalationPage: React.FC = () => {
       facility: targetSession.facility,
       issue: newAlertIssue.trim(),
       priority: newAlertPriority,
+      escalationLevel: newAlertPriority,
       owner: newAlertOwner,
       dueTime: targetSession.scheduledStart,
       status: 'OPEN',
-      createdTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: now.toISOString(),
+      escalationHistory: [
+        {
+          id: `ESC-${Date.now()}`,
+          timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          previousPriority: 'NORMAL',
+          newPriority: newAlertPriority,
+          reason: 'Alert manually created by OR Director',
+          triggeredBy: 'Dr. Sarah Jenkins'
+        }
+      ],
       followUpNotes: [
         {
           id: `NOTE-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           text: 'Alert manually created by OR Director.',
           author: 'Dr. Sarah Jenkins'
         }
@@ -88,6 +106,15 @@ export const AlertsEscalationPage: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={recheckSLA}
+            className="flex items-center gap-1.5 rounded-xl border border-blue-500/30 bg-blue-500/10 px-3.5 py-1.5 text-xs font-bold text-blue-400 hover:bg-blue-500/20 transition-colors"
+            title="Recalculate SLA timers and time-decay escalations for open alerts"
+          >
+            <RotateCcw className="h-4 w-4" />
+            <span>Re-check SLA</span>
+          </button>
+
           <button
             onClick={() => setIsCreateModalOpen(true)}
             className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-md hover:bg-blue-500 transition-colors"
@@ -132,8 +159,9 @@ export const AlertsEscalationPage: React.FC = () => {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
           <div className="rounded-2xl border border-slate-800 bg-slate-900 shadow-sm overflow-hidden">
-            <div className="border-b border-slate-800 p-4">
+            <div className="border-b border-slate-800 p-4 flex justify-between items-center">
               <h3 className="text-sm font-bold text-white">Active Operational Alerts Queue</h3>
+              <span className="text-xs text-slate-400 font-medium">Automatic 15m SLA decay rules active</span>
             </div>
 
             <div className="divide-y divide-slate-800">
@@ -143,49 +171,58 @@ export const AlertsEscalationPage: React.FC = () => {
                   <p className="text-sm font-semibold">No active alerts matching this filter.</p>
                 </div>
               ) : (
-                filteredAlerts.map(alert => (
-                  <div
-                    key={alert.id}
-                    onClick={() => setSelectedAlertId(alert.id)}
-                    className={`p-4 transition-colors cursor-pointer hover:bg-slate-800/40 ${
-                      selectedAlertId === alert.id ? 'bg-slate-800/80 border-l-4 border-l-blue-500' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-bold text-blue-400">{alert.id}</span>
-                        <span className="text-xs font-bold text-white">{alert.theatre}</span>
-                        <span className="text-[10px] text-slate-400">({alert.facility})</span>
+                filteredAlerts.map(alert => {
+                  const sla = getSLAInfo(alert);
+                  return (
+                    <div
+                      key={alert.id}
+                      onClick={() => setSelectedAlertId(alert.id)}
+                      className={`p-4 transition-colors cursor-pointer hover:bg-slate-800/40 ${
+                        selectedAlertId === alert.id ? 'bg-slate-800/80 border-l-4 border-l-blue-500' : ''
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-blue-400">{alert.id}</span>
+                          <span className="text-xs font-bold text-white">{alert.theatre}</span>
+                          <span className="text-[10px] text-slate-400">({alert.facility})</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <StatusBadge status={alert.priority} size="sm" />
+                          <StatusBadge status={alert.status} size="sm" />
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <StatusBadge status={alert.priority} size="sm" />
-                        <StatusBadge status={alert.status} size="sm" />
+
+                      <p className="mt-2 text-xs font-medium text-slate-200">{alert.issue}</p>
+
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                        <div className="flex items-center gap-3">
+                          <span>Owner: <strong className="text-slate-300">{alert.owner}</strong></span>
+                          <span>Due: <strong className="text-slate-300">{alert.dueTime}</strong></span>
+                          {alert.status !== 'RESOLVED' && (
+                            <span className="flex items-center gap-1 text-slate-400">
+                              <Clock className="h-3 w-3 text-amber-400" />
+                              <span>SLA: <strong className="text-amber-300">{sla.slaStatus.replace('_', ' ')}</strong> ({sla.elapsedMinutes}m)</span>
+                            </span>
+                          )}
+                        </div>
+
+                        {alert.status !== 'RESOLVED' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              resolveAlert(alert.id);
+                            }}
+                            className="flex items-center gap-1 rounded-md bg-emerald-600/20 px-2.5 py-1 text-[11px] font-bold text-emerald-400 hover:bg-emerald-600 hover:text-white border border-emerald-500/30 transition-colors"
+                          >
+                            <Check className="h-3 w-3" />
+                            <span>Resolve Alert</span>
+                          </button>
+                        )}
                       </div>
                     </div>
-
-                    <p className="mt-2 text-xs font-medium text-slate-200">{alert.issue}</p>
-
-                    <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
-                      <div className="flex items-center gap-3">
-                        <span>Owner: <strong className="text-slate-300">{alert.owner}</strong></span>
-                        <span>Due: <strong className="text-slate-300">{alert.dueTime}</strong></span>
-                      </div>
-
-                      {alert.status !== 'RESOLVED' && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            resolveAlert(alert.id);
-                          }}
-                          className="flex items-center gap-1 rounded-md bg-emerald-600/20 px-2.5 py-1 text-[11px] font-bold text-emerald-400 hover:bg-emerald-600 hover:text-white border border-emerald-500/30 transition-colors"
-                        >
-                          <Check className="h-3 w-3" />
-                          <span>Resolve Alert</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -207,6 +244,39 @@ export const AlertsEscalationPage: React.FC = () => {
                   <ArrowUpRight className="h-3.5 w-3.5" />
                 </button>
               </div>
+
+              {/* SLA Information Box */}
+              {selectedSLAInfo && selectedAlert.status !== 'RESOLVED' && (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-300 flex items-center gap-1.5">
+                      <Clock className="h-3.5 w-3.5 text-blue-400" />
+                      SLA Status & Time Remaining
+                    </span>
+                    <span className={`rounded-md px-2 py-0.5 text-[10px] font-extrabold ${
+                      selectedSLAInfo.slaStatus === 'ESCALATED' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
+                      selectedSLAInfo.slaStatus === 'BREACHED' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+                      selectedSLAInfo.slaStatus === 'WARNING' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' :
+                      'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    }`}>
+                      {selectedSLAInfo.slaStatus}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-400">{selectedSLAInfo.message}</p>
+
+                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-slate-800/60">
+                    <div>
+                      <span className="text-slate-500 block">Created:</span>
+                      <span className="font-semibold text-slate-300">{selectedAlert.createdTime}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">Elapsed Time:</span>
+                      <span className="font-semibold text-slate-300">{selectedSLAInfo.elapsedMinutes} mins</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3 text-xs">
                 <div>
@@ -263,13 +333,49 @@ export const AlertsEscalationPage: React.FC = () => {
                 </div>
               </div>
 
+              {/* Escalation History Timeline */}
+              <div className="border-t border-slate-800 pt-3">
+                <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                  <History className="h-3.5 w-3.5 text-amber-400" />
+                  <span>Stateful Escalation History ({(selectedAlert.escalationHistory || []).length})</span>
+                </h4>
+
+                <div className="mt-2 max-h-36 overflow-y-auto space-y-2 text-xs scrollbar-thin">
+                  {(!selectedAlert.escalationHistory || selectedAlert.escalationHistory.length === 0) ? (
+                    <p className="text-[11px] text-slate-500 italic p-1">No escalation transitions logged yet.</p>
+                  ) : (
+                    selectedAlert.escalationHistory.map((item, idx) => (
+                      <div key={item.id || idx} className="rounded-lg bg-slate-950/60 p-2 border border-slate-800/80">
+                        <div className="flex items-center justify-between text-[10px] text-slate-400">
+                          <span className="font-semibold text-blue-400">{item.timestamp}</span>
+                          <span className="font-mono text-[9px] text-slate-500">{item.triggeredBy}</span>
+                        </div>
+                        <div className="mt-1 flex items-center gap-1.5 text-[11px] font-bold text-white">
+                          <span className="text-slate-400">{item.previousPriority}</span>
+                          <span className="text-slate-500">→</span>
+                          <span className={
+                            item.newPriority === 'ESCALATED' ? 'text-rose-400' :
+                            item.newPriority === 'URGENT' ? 'text-amber-400' :
+                            item.newPriority === 'WARNING' ? 'text-yellow-400' : 'text-blue-400'
+                          }>
+                            {item.newPriority}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-slate-400">{item.reason}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Follow-Up Audit Notes */}
               <div className="border-t border-slate-800 pt-3">
                 <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                   <MessageSquare className="h-3.5 w-3.5 text-blue-400" />
                   <span>Follow-Up Audit Notes ({selectedAlert.followUpNotes.length})</span>
                 </h4>
 
-                <div className="mt-2 max-h-40 overflow-y-auto space-y-2 text-xs scrollbar-thin">
+                <div className="mt-2 max-h-36 overflow-y-auto space-y-2 text-xs scrollbar-thin">
                   {selectedAlert.followUpNotes.map(n => (
                     <div key={n.id} className="rounded-lg bg-slate-950/60 p-2 border border-slate-800">
                       <div className="flex justify-between text-[10px] text-slate-500 font-semibold">

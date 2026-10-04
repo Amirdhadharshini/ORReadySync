@@ -1,51 +1,42 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { 
   TheatreSession, 
   OperationalAlert, 
   ActivePage, 
   ReadinessAnalysisResult,
   ResourceDetails,
-  AuthUser
+  AuthUser,
+  TestExecutionResult,
+  AlertPriority
 } from '../types';
 import { loadSessions, saveSessions, loadAlerts, saveAlerts, resetDemoState, loadAuthUser, saveAuthUser } from '../services/storageService';
 import { analyzeSessionReadiness } from '../services/aiEngine';
-import { DEMO_USERS } from '../data/mockData';
+import { evaluateAlertSLA } from '../services/slaEngine';
+import { DEMO_USERS, DETERMINISTIC_TEST_CASES } from '../data/mockData';
+import { AppContext } from './AppContextObject';
 
-interface AppContextType {
-  user: AuthUser | null;
-  login: (email: string, pass: string) => boolean;
-  logout: () => void;
-  sessions: TheatreSession[];
-  alerts: OperationalAlert[];
-  activePage: ActivePage;
-  setActivePage: (page: ActivePage) => void;
-  selectedSessionId: string;
-  setSelectedSessionId: (id: string) => void;
-  selectedSession: TheatreSession;
-  runReadinessCheck: (sessionId: string) => ReadinessAnalysisResult;
-  updateSessionResource: (sessionId: string, resourceKey: 'patient' | 'staff' | 'equipment' | 'sterileSupplies', updates: Partial<ResourceDetails>) => void;
-  updateAlert: (alertId: string, updates: Partial<OperationalAlert>) => void;
-  addAlertNote: (alertId: string, text: string, author: string) => void;
-  resolveAlert: (alertId: string) => void;
-  runScenario: (scenarioId: string) => void;
-  resetScenario: (scenarioId: string) => void;
-  resetAllData: () => void;
-  activeScenarioId: string | null;
-  isAboutModalOpen: boolean;
-  setIsAboutModalOpen: (open: boolean) => void;
-  navigateToSynchronizerForSession: (sessionId: string) => void;
-}
-
-const AppContext = createContext<AppContextType | undefined>(undefined);
+const TEST_RESULTS_KEY = 'or_readysync_test_results_v1';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(loadAuthUser);
   const [sessions, setSessions] = useState<TheatreSession[]>(loadSessions);
-  const [alerts, setAlerts] = useState<OperationalAlert[]>(loadAlerts);
+  const [alerts, setAlerts] = useState<OperationalAlert[]>(() => loadAlerts().map(alert => evaluateAlertSLA(alert)));
   const [activePage, setActivePage] = useState<ActivePage>('dashboard');
   const [selectedSessionId, setSelectedSessionId] = useState<string>('SES-103');
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
   const [isAboutModalOpen, setIsAboutModalOpen] = useState<boolean>(false);
+  const [testExecutionResults, setTestExecutionResults] = useState<Record<string, TestExecutionResult>>(() => {
+    try {
+      const raw = localStorage.getItem(TEST_RESULTS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {
+      // fallback
+    }
+    return {};
+  });
 
   useEffect(() => {
     saveAuthUser(user);
@@ -58,6 +49,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     saveAlerts(alerts);
   }, [alerts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEST_RESULTS_KEY, JSON.stringify(testExecutionResults));
+    } catch (e) {
+      console.error('Failed to save test results', e);
+    }
+  }, [testExecutionResults]);
+
+  const recheckSLA = () => {
+    setAlerts(prev => prev.map(alert => evaluateAlertSLA(alert)));
+  };
 
   const login = (email: string, pass: string): boolean => {
     const matched = DEMO_USERS.find(
@@ -155,17 +158,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (existingAlert) {
         setAlerts(prev => prev.map(a => {
           if (a.id === existingAlert.id) {
+            const priorityChanged = a.priority !== analysis.escalationLevel;
+            const history = [...(a.escalationHistory || [])];
+            if (priorityChanged) {
+              history.push({
+                id: `ESC-${Date.now()}`,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                previousPriority: a.priority,
+                newPriority: analysis.escalationLevel,
+                reason: `Priority updated via Readiness Analysis Engine (${analysis.mainBlocker} blocker)`,
+                triggeredBy: 'Readiness Analysis Engine'
+              });
+            }
             return {
               ...a,
               priority: analysis.escalationLevel,
+              escalationLevel: analysis.escalationLevel,
               issue: `${analysis.mainBlocker} readiness hold: ${delayReason || 'Delayed'}`,
               dueTime: analysis.allResourcesReadyTime,
-              owner: alertOwner
+              owner: alertOwner,
+              escalationHistory: history
             };
           }
           return a;
         }));
       } else {
+        const now = new Date();
         const newAlert: OperationalAlert = {
           id: `ALT-${Math.floor(100 + Math.random() * 900)}`,
           sessionId: target.id,
@@ -173,14 +191,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           facility: target.facility,
           issue: `${analysis.mainBlocker} readiness hold: ${delayReason || 'Delayed readiness'}`,
           priority: analysis.escalationLevel,
+          escalationLevel: analysis.escalationLevel,
           owner: alertOwner,
           dueTime: analysis.allResourcesReadyTime,
           status: 'OPEN',
-          createdTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: now.toISOString(),
+          escalationHistory: [
+            {
+              id: `ESC-${Date.now()}`,
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              previousPriority: 'NORMAL',
+              newPriority: analysis.escalationLevel,
+              reason: `Alert created by Readiness Analysis Engine (${analysis.mainBlocker} blocker)`,
+              triggeredBy: 'Readiness Analysis Engine'
+            }
+          ],
           followUpNotes: [
             {
               id: `NOTE-${Date.now()}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               text: `Alert generated by Readiness Analysis Engine. ${analysis.predictedIdleMinutes} min idle predicted. Blocker: ${analysis.mainBlocker}`,
               author: user ? user.name : 'OR ReadySync Engine'
             }
@@ -194,7 +224,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateAlert = (alertId: string, updates: Partial<OperationalAlert>) => {
-    setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, ...updates } : a));
+    setAlerts(prev => prev.map(a => {
+      if (a.id === alertId) {
+        const updated = { ...a, ...updates };
+        if (updates.priority && updates.priority !== a.priority) {
+          const historyEntry = {
+            id: `ESC-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            previousPriority: a.priority,
+            newPriority: updates.priority as AlertPriority,
+            reason: 'Priority level updated manually in control panel',
+            triggeredBy: user ? user.name : 'User Manual Update'
+          };
+          updated.escalationLevel = updates.priority;
+          updated.escalationHistory = [...(a.escalationHistory || []), historyEntry];
+        }
+        return updated;
+      }
+      return a;
+    }));
   };
 
   const addAlertNote = (alertId: string, text: string, author: string) => {
@@ -217,7 +265,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const resolveAlert = (alertId: string) => {
     const targetAlert = alerts.find(a => a.id === alertId);
-    setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, status: 'RESOLVED' } : a));
+    setAlerts(prev => prev.map(a => {
+      if (a.id === alertId) {
+        const resolvedHistory = [...(a.escalationHistory || []), {
+          id: `ESC-${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          previousPriority: a.priority,
+          newPriority: a.priority,
+          reason: 'Alert resolved by operational team',
+          triggeredBy: user ? user.name : 'User Resolution'
+        }];
+        return { 
+          ...a, 
+          status: 'RESOLVED',
+          resolvedAt: new Date().toISOString(),
+          escalationHistory: resolvedHistory
+        };
+      }
+      return a;
+    }));
 
     if (targetAlert) {
       setSessions(prev => prev.map(s => {
@@ -278,6 +344,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return s;
       }));
 
+      const now = new Date();
       setAlerts(prev => [
         {
           id: `ALT-SCEN-1`,
@@ -286,14 +353,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           facility: 'St. Jude Memorial Hospital',
           issue: 'Scenario 1 Active: Infusion pump failed self-test, calibration hold',
           priority: 'URGENT',
+          escalationLevel: 'URGENT',
           owner: 'Equipment Coordinator',
           dueTime: '10:38 AM',
           status: 'OPEN',
-          createdTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: now.toISOString(),
+          escalationHistory: [
+            {
+              id: `ESC-SCEN-1`,
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              previousPriority: 'NORMAL',
+              newPriority: 'URGENT',
+              reason: 'Synthetic failure scenario injection (Equipment hold)',
+              triggeredBy: 'Failure Test Center'
+            }
+          ],
           followUpNotes: [
             {
               id: `NOTE-${Date.now()}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               text: 'Failure Scenario 1 executed. Equipment flagged as main blocker.',
               author: 'Failure Test Center'
             }
@@ -328,6 +407,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return s;
       }));
 
+      const now = new Date();
       setAlerts(prev => [
         {
           id: `ALT-SCEN-2`,
@@ -336,14 +416,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           facility: 'St. Jude Memorial Hospital',
           issue: 'Scenario 2 Active: Anaesthesia lead delayed in Trauma Bay emergency',
           priority: 'URGENT',
+          escalationLevel: 'URGENT',
           owner: 'Anaesthesia Operations Lead',
           dueTime: '09:40 AM',
           status: 'OPEN',
-          createdTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: now.toISOString(),
+          escalationHistory: [
+            {
+              id: `ESC-SCEN-2`,
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              previousPriority: 'NORMAL',
+              newPriority: 'URGENT',
+              reason: 'Synthetic failure scenario injection (Staff delay)',
+              triggeredBy: 'Failure Test Center'
+            }
+          ],
           followUpNotes: [
             {
               id: `NOTE-${Date.now()}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               text: 'Failure Scenario 2 executed. Staff flagged as main blocker.',
               author: 'Failure Test Center'
             }
@@ -378,6 +470,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return s;
       }));
 
+      const now = new Date();
       setAlerts(prev => [
         {
           id: `ALT-SCEN-3`,
@@ -386,14 +479,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           facility: 'Metro Health General',
           issue: 'Scenario 3 Active: Inter-facility transport gridlock (45 min delay)',
           priority: 'ESCALATED',
+          escalationLevel: 'ESCALATED',
           owner: 'Inter-Facility Transport Control',
           dueTime: '12:15 PM',
           status: 'OPEN',
-          createdTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: now.toISOString(),
+          escalationHistory: [
+            {
+              id: `ESC-SCEN-3`,
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              previousPriority: 'NORMAL',
+              newPriority: 'ESCALATED',
+              reason: 'Synthetic failure scenario injection (Patient gridlock)',
+              triggeredBy: 'Failure Test Center'
+            }
+          ],
           followUpNotes: [
             {
               id: `NOTE-${Date.now()}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               text: 'Failure Scenario 3 executed. Escalation triggered.',
               author: 'Failure Test Center'
             }
@@ -428,6 +533,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return s;
       }));
 
+      const now = new Date();
       setAlerts(prev => [
         {
           id: `ALT-SCEN-4`,
@@ -436,14 +542,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           facility: 'Metro Health General',
           issue: 'Scenario 4 Active: Biological indicator hold on orthopaedic spinal tray',
           priority: 'URGENT',
+          escalationLevel: 'URGENT',
           owner: 'Sterile Processing Supervisor',
           dueTime: '01:55 PM',
           status: 'OPEN',
-          createdTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: now.toISOString(),
+          escalationHistory: [
+            {
+              id: `ESC-SCEN-4`,
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              previousPriority: 'NORMAL',
+              newPriority: 'URGENT',
+              reason: 'Synthetic failure scenario injection (Sterile hold)',
+              triggeredBy: 'Failure Test Center'
+            }
+          ],
           followUpNotes: [
             {
               id: `NOTE-${Date.now()}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               text: 'Failure Scenario 4 executed. Sterile Supplies flagged as main blocker.',
               author: 'Failure Test Center'
             }
@@ -465,6 +583,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAlerts(res.alerts);
     setActiveScenarioId(null);
     setSelectedSessionId('SES-103');
+    setTestExecutionResults({});
+    try {
+      localStorage.removeItem(TEST_RESULTS_KEY);
+    } catch {
+      // ignore
+    }
+  };
+
+  const runDeterministicTest = (testId: string): TestExecutionResult => {
+    const testDef = DETERMINISTIC_TEST_CASES.find(t => t.id === testId);
+    if (!testDef) {
+      throw new Error(`Test definition ${testId} not found`);
+    }
+
+    const syntheticSession: TheatreSession = {
+      id: testDef.affectedSessionId,
+      facility: 'Test Hospital',
+      theatre: 'OR-TEST',
+      procedure: 'Deterministic Validation Procedure',
+      patientId: 'PAT-TEST',
+      patientName: 'Test Patient',
+      scheduledStart: testDef.scheduledStartTime,
+      patient: {
+        status: testDef.initialResourceState.patientReady === testDef.scheduledStartTime ? 'READY' : 'DELAYED',
+        expectedReadyTime: testDef.initialResourceState.patientReady,
+        owner: 'Patient Transport'
+      },
+      staff: {
+        status: testDef.initialResourceState.staffReady === testDef.scheduledStartTime ? 'READY' : 'DELAYED',
+        expectedReadyTime: testDef.initialResourceState.staffReady,
+        owner: 'Surgical Team'
+      },
+      equipment: {
+        status: testDef.initialResourceState.equipmentReady === testDef.scheduledStartTime ? 'READY' : 'DELAYED',
+        expectedReadyTime: testDef.initialResourceState.equipmentReady,
+        owner: 'Biomedical Services'
+      },
+      sterileSupplies: {
+        status: testDef.initialResourceState.sterileSuppliesReady === testDef.scheduledStartTime ? 'READY' : 'DELAYED',
+        expectedReadyTime: testDef.initialResourceState.sterileSuppliesReady,
+        owner: 'Sterile Processing'
+      },
+      overallStatus: 'AT_RISK',
+      readinessScore: 50,
+      predictedIdleMinutes: 0,
+      mainBlocker: 'None',
+      aiRecommendation: '',
+      allReadyTime: '',
+      baselineIdleMinutes: 30
+    };
+
+    const analysis = analyzeSessionReadiness(syntheticSession);
+
+    const differences: string[] = [];
+    if (analysis.mainBlocker !== testDef.expected.primaryBlocker) {
+      differences.push(`Primary Blocker: expected "${testDef.expected.primaryBlocker}", got "${analysis.mainBlocker}"`);
+    }
+    if (analysis.overallStatus !== testDef.expected.sessionStatus) {
+      differences.push(`Session Status: expected "${testDef.expected.sessionStatus}", got "${analysis.overallStatus}"`);
+    }
+    if (analysis.allResourcesReadyTime !== testDef.expected.allResourcesReadyTime) {
+      differences.push(`All Ready Time: expected "${testDef.expected.allResourcesReadyTime}", got "${analysis.allResourcesReadyTime}"`);
+    }
+    if (analysis.predictedIdleMinutes !== testDef.expected.avoidableIdleMinutes) {
+      differences.push(`Avoidable Idle Minutes: expected ${testDef.expected.avoidableIdleMinutes} min, got ${analysis.predictedIdleMinutes} min`);
+    }
+
+    const result: TestExecutionResult = {
+      testId,
+      passed: differences.length === 0,
+      executedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      actual: {
+        primaryBlocker: analysis.mainBlocker,
+        sessionStatus: analysis.overallStatus,
+        allResourcesReadyTime: analysis.allResourcesReadyTime,
+        avoidableIdleMinutes: analysis.predictedIdleMinutes,
+        alertPriority: analysis.escalationLevel
+      },
+      differences
+    };
+
+    setTestExecutionResults(prev => ({
+      ...prev,
+      [testId]: result
+    }));
+
+    return result;
+  };
+
+  const runAllDeterministicTests = (): TestExecutionResult[] => {
+    const results = DETERMINISTIC_TEST_CASES.map(tc => runDeterministicTest(tc.id));
+    return results;
   };
 
   return (
@@ -485,22 +695,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateAlert,
         addAlertNote,
         resolveAlert,
+        recheckSLA,
         runScenario,
         resetScenario,
         resetAllData,
         activeScenarioId,
         isAboutModalOpen,
         setIsAboutModalOpen,
-        navigateToSynchronizerForSession
+        navigateToSynchronizerForSession,
+        testExecutionResults,
+        runDeterministicTest,
+        runAllDeterministicTests
       }}
     >
       {children}
     </AppContext.Provider>
   );
-};
-
-export const useApp = () => {
-  const context = useContext(AppContext);
-  if (!context) throw new Error('useApp must be used within an AppProvider');
-  return context;
 };

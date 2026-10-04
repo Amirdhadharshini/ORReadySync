@@ -1,5 +1,5 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useApp } from '../../context/useApp';
 import { X, Activity, CheckCircle } from 'lucide-react';
 
 export const AboutModal: React.FC = () => {
