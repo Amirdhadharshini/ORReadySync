@@ -9,7 +9,7 @@ OR ReadySync is a web-based operating room readiness synchronization platform de
 - Equipment
 - Sterile Supplies
 
-The system provides a centralized workflow for monitoring theatre sessions, identifying readiness blockers, calculating avoidable idle time, managing operational alerts and escalations, testing failure scenarios, and measuring performance against a baseline.
+The system provides a centralized workflow for monitoring theatre sessions, identifying readiness blockers, calculating avoidable idle time, managing operational alerts and escalations, executing deterministic failure test cases, and measuring performance against a baseline.
 
 ---
 
@@ -44,10 +44,10 @@ The main objectives of OR ReadySync are:
 7. Identify the primary readiness blocker.
 8. Calculate avoidable theatre idle time.
 9. Provide operational recommendations.
-10. Create and manage alerts.
+10. Create and manage alerts with stateful escalation history.
 11. Assign ownership to unresolved issues.
-12. Support due times and escalation.
-13. Test common operational failure scenarios.
+12. Support SLA time-based escalation rules (15-minute decay intervals).
+13. Test common operational failure scenarios via a deterministic test suite.
 14. Compare baseline performance with OR ReadySync performance.
 15. Calculate minutes saved and percentage improvement.
 16. Support error and ambiguous-case review.
@@ -78,7 +78,7 @@ Blocker Identification
         ↓
 Avoidable Idle-Time Calculation
         ↓
-Alert / Escalation
+Alert / SLA Escalation Engine
         ↓
 Resolution
         ↓
@@ -102,7 +102,21 @@ The system compares the readiness time of each resource with the scheduled theat
 
 ---
 
-# 5. Readiness Calculation
+# 5. Formal Data Schema
+
+The application uses structured TypeScript data models and interfaces (`src/types/index.ts`) for all operational entities:
+
+- **Theatre / Session Information (`TheatreSession`)**: Stores ID, facility, theatre, procedure, scheduled start time, overall status, readiness score, predicted idle minutes, primary blocker, and linked resources.
+- **Resource Readiness (`ResourceDetails`)**: Tracks resource status (`READY`, `NOT_READY`, `DELAYED`, `AT_RISK`, `UNKNOWN`), expected ready time, actual ready time, delay reason, and assigned owner.
+- **Alerts (`OperationalAlert`)**: Stores ID, session ID, theatre, facility, issue description, priority (`NORMAL`, `WARNING`, `URGENT`, `ESCALATED`), status (`OPEN`, `IN_PROGRESS`, `RESOLVED`), owner, creation timestamp (`createdAt`), due time, escalation level, escalation history, and follow-up audit notes.
+- **Escalation History (`EscalationHistory`)**: Stateful log capturing timestamp, previous priority, new priority, escalation reason, and triggering source.
+- **Failure Test Cases (`DeterministicTestCase` & `TestExecutionResult`)**: Strict schemas for expected vs. actual test assertions and PASS/FAIL reporting.
+
+This formal data schema ensures consistent, stateful tracking across the application while remaining a clean, self-contained client-side prototype.
+
+---
+
+# 6. Readiness Calculation
 
 ## All Resources Ready Time
 
@@ -139,223 +153,108 @@ Equipment Ready         = 10:38
 Sterile Supplies Ready  = 09:35
 ```
 
-The latest readiness time is:
-
-```text
-10:38
-```
-
-Therefore:
+The latest readiness time is `10:38`. Therefore:
 
 ```text
 Avoidable Idle Time = 10:38 - 10:10
                     = 28 minutes
 ```
 
-The equipment is identified as the primary blocker because it is the final required resource to become ready.
+Equipment is identified as the primary blocker because it is the final required resource to become ready.
 
 ---
 
-# 6. Application Modules
+# 7. Application Modules
 
 ## Dashboard
 
-The Dashboard provides a centralized operational overview.
+The Dashboard provides a centralized operational overview, presenting:
 
-It presents information such as:
-
-- Theatre sessions
-- Readiness status
-- Readiness score
-- Avoidable idle minutes
-- Active blockers
-- High-priority actions
-- Urgent issues
-- Escalated cases
-- Facility/session information
-
-The dashboard is intended to help users identify sessions that require attention quickly.
-
----
+- Theatre sessions table & status gauges
+- Overall OR Readiness Score (0–100%)
+- Avoidable idle minutes & active blockers
+- Unresolved high-priority actions
+- Facility/session filtering
 
 ## Theatre Schedule
 
-The Theatre Schedule module provides an overview of planned operating-room sessions.
-
-It includes information such as:
-
-- Theatre/OR
-- Scheduled start time
-- Session information
-- Facility
-- Readiness state
-- Session status
-- Operational blockers
-
-A session can be selected for detailed readiness analysis.
-
----
+Overview of planned operating-room sessions across facilities, allowing filtering by status, theatre, or facility and one-click navigation to the synchronizer view.
 
 ## Readiness Synchronizer
 
-The Readiness Synchronizer is the core module of OR ReadySync.
-
-It displays the readiness state of:
-
-```text
-Patient
-Staff
-Equipment
-Sterile Supplies
-```
-
-The system determines:
-
-- Overall readiness
-- Latest resource readiness time
-- Primary blocker
-- Avoidable idle minutes
-- Readiness score
-- Operational recommendation
-
-### Re-check Readiness
-
-The application provides a:
-
-```text
-RE-CHECK READINESS
-```
-
-action.
-
-The re-check recalculates the current readiness state and updates the analysis based on the current resource information.
+The core synchronization view showing resource cards for Patient, Staff, Equipment, and Sterile Supplies with inline status editing, readiness calculations, operational recommendations, and a **RE-CHECK READINESS** action button.
 
 ---
 
-# 7. Alerts & Escalation
+# 8. Alerts & Escalation (SLA / Time-Based Escalation)
 
-The Alerts & Escalation module manages operational issues identified during readiness analysis.
+The Alerts & Escalation module manages operational readiness bottlenecks using an automated, time-based SLA decay workflow implemented in `src/services/slaEngine.ts`.
 
-An alert can contain:
+## SLA Escalation Workflow
 
-- Issue description
-- Priority
-- Owner
-- Due time
-- Status
-- Assignment
-- Follow-up information
-- Escalation state
-- Resolution information
-
-## Priority Levels
+Unresolved open alerts are evaluated based on elapsed time from `createdAt` and automatically progress through priority levels:
 
 ```text
-Normal
-Warning
-Urgent
-Escalated
+NORMAL
+  ↓ after 15 minutes unresolved
+WARNING
+  ↓ after another 15 minutes unresolved (30m total)
+URGENT
+  ↓ after another 15 minutes unresolved (45m total)
+ESCALATED
 ```
 
-## Alert Status
+## SLA Tracking & Information
 
-```text
-Open
-In Progress
-Resolved
-```
+For every alert, the control panel displays:
 
-The purpose of this workflow is to ensure that a readiness blocker has an identifiable owner and can be followed through to resolution.
+- **Current Priority**: `NORMAL`, `WARNING`, `URGENT`, or `ESCALATED`
+- **Creation Time & Due Time**: `createdAt` ISO timestamp and target resolution time
+- **SLA Status Badge**: `ON TRACK`, `WARNING`, `BREACHED`, `ESCALATED`, or `RESOLVED`
+- **Time Remaining**: Countdown until the next escalation level (e.g. "12 min remaining until URGENT")
+- **Escalation History Timeline**: Stateful log recording priority transitions (`previousPriority → newPriority`), timestamps, reasons, and triggering agents (`SLA Time-Decay Engine`, `User Manual Update`, `Readiness Analysis Engine`).
+- **Resolution Behavior**: Resolving an alert (`RESOLVED`) immediately stops further SLA decay.
+- **Manual SLA Re-Check**: A **"Re-check SLA"** action button allows immediate evaluation of SLA timers across all active alerts without server dependencies.
+
+*Note: SLA evaluation runs entirely on the client side using browser time and deterministic logic.*
 
 ---
 
-# 8. Failure Test Center
+# 9. Failure Test Center
 
-The Failure Test Center allows the readiness workflow to be tested under common operational failure conditions.
+The Failure Test Center includes a suite of **deterministic test cases (TEST-001 to TEST-005)** alongside interactive synthetic failure scenario runners.
 
-Supported scenarios include:
+## Deterministic Test Cases
 
-### Equipment Unavailable
+| Test Case | Description | Expected Outcome |
+|---|---|---|
+| **TEST-001 — Patient Transit Delay** | Patient arrival delayed to 10:20 AM for a 10:00 AM start | Primary Blocker = **Patient**, Session Status = **DELAYED**, Avoidable Idle = **20 min** |
+| **TEST-002 — Missing Autoclave Equipment Batch** | Infusion pump calibration batch delayed to 10:30 AM | Primary Blocker = **Equipment**, Session Status = **DELAYED**, Avoidable Idle = **30 min** |
+| **TEST-003 — Staff Not Ready** | Anaesthesia team arrival delayed to 10:25 AM | Primary Blocker = **Staff**, Session Status = **DELAYED**, Avoidable Idle = **25 min** |
+| **TEST-004 — Sterile Supplies Delayed** | Biological indicator verification delays tray release to 10:15 AM | Primary Blocker = **Sterile Supplies**, Session Status = **DELAYED**, Avoidable Idle = **15 min** |
+| **TEST-005 — All Resources Ready** | Positive control test with all resources ready by 09:50 AM | Primary Blocker = **None**, Session Status = **READY**, Avoidable Idle = **0 min** |
 
-Simulates a required equipment delay or unavailability.
+## Test Execution & Pass/Fail Validation
 
-Expected operational result:
-
-```text
-Equipment → Blocker
-Session → Delayed / At Risk
-Operational action → Required
-```
-
-### Staff Not Ready
-
-Simulates unavailable or delayed staff.
-
-```text
-Staff → Blocker
-Session → Delayed
-Operational action → Required
-```
-
-### Patient Transfer Delayed
-
-Simulates a patient transfer arriving later than required.
-
-```text
-Patient → Blocker
-Session → Delayed
-Idle time → Recalculated
-```
-
-### Sterile Supplies Not Ready
-
-Simulates unavailable or delayed sterile supplies.
-
-```text
-Sterile Supplies → Blocker
-Session → Delayed
-Operational action → Required
-```
-
-These scenarios are intended to demonstrate how OR ReadySync responds to different readiness failures.
+- **Expected vs. Actual Comparison**: Compares actual primary blocker, session status, all ready time, and idle minutes against test assertions.
+- **PASS/FAIL Badges**: Reports `✓ PASS` (emerald) or `✗ FAIL` (rose) with assertion discrepancy details if any value differs.
+- **"RUN ALL TESTS"**: Executes all 5 test cases deterministically and displays a summary header (e.g. `5 Tests | 5 Passed | 0 Failed | 100% Pass Rate`).
 
 ---
 
-# 9. Baseline & Performance
+# 10. Baseline & Performance
 
-OR ReadySync includes a performance analysis module to compare baseline theatre idle time against the idle time represented by the OR ReadySync workflow.
+The Baseline & Performance module measures operational improvement by comparing historical baseline idle time against OR ReadySync synchronized idle time.
 
-The system measures:
-
-- Baseline idle minutes
-- OR ReadySync idle minutes
-- Minutes saved
-- Improvement percentage
-
-## Minutes Saved
+## Metrics Formulas
 
 ```text
-Minutes Saved =
-Baseline Idle Minutes - OR ReadySync Idle Minutes
+Minutes Saved = Baseline Idle Minutes - OR ReadySync Idle Minutes
+
+Improvement % = ((Baseline Idle Minutes - OR ReadySync Idle Minutes) / Baseline Idle Minutes) × 100
 ```
-
-## Improvement Percentage
-
-```text
-Improvement % =
-(
-Baseline Idle Minutes - OR ReadySync Idle Minutes
-)
-/
-Baseline Idle Minutes
-× 100
-```
-
-The values are intended to demonstrate measurable operational improvement using the project's demonstration data.
 
 ### Current Demonstration Dataset
-
-The current mock demonstration data represents:
 
 ```text
 Baseline Idle Time       = 225 minutes
@@ -364,104 +263,67 @@ Minutes Saved            = 135 minutes
 Improvement              = 60%
 ```
 
-These values are **prototype/demo results**, not results from a real hospital deployment or clinical study.
+*These values represent prototype demonstration results calculated from mock operational data.*
 
 ---
 
-# 10. Error and Ambiguous-Case Handling
+# 11. Error and Ambiguous-Case Handling
 
-Operational data may sometimes be incomplete or produce ambiguous situations.
-
-OR ReadySync is designed to distinguish between:
+The system distinguishes between clear single-resource bottlenecks and overlapping/incomplete data cases:
 
 ```text
-Clearly Identifiable Blocker
-        ↓
-Operational Action
+Clearly Identifiable Blocker → Targeted Operational Prompt
 
 vs.
 
-Insufficient / Ambiguous Information
-        ↓
-Human Review Required
+Overlapping / Ambiguous Delays → Human Review Required (Clinical Triage)
 ```
-
-The system should not treat incomplete information as proof of a specific operational cause.
-
-This supports safer operational decision-making in the prototype.
 
 ---
 
-# 11. End-to-End Workflow
-
-A typical OR ReadySync workflow is:
+# 12. End-to-End Workflow
 
 ```text
 1. Select Theatre Session
           ↓
-2. View Scheduled Start
+2. Check Resource Readiness (Patient, Staff, Equipment, Sterile Supplies)
           ↓
-3. Check Patient Readiness
+3. Synchronize Readiness & Calculate Avoidable Idle Time
           ↓
-4. Check Staff Readiness
+4. Identify Primary Blocker & Generate Recommendation
           ↓
-5. Check Equipment Readiness
+5. Create / Review Operational Alert
           ↓
-6. Check Sterile Supplies Readiness
+6. Assign Owner & Track SLA Time-Decay Escalation (15m intervals)
           ↓
-7. Synchronize Readiness
+7. Record Stateful Escalation History
           ↓
-8. Identify Blocker
+8. Resolve Issue & Stop SLA Decay
           ↓
-9. Calculate Avoidable Idle Time
-          ↓
-10. Create / Review Alert
-          ↓
-11. Assign Owner
-          ↓
-12. Escalate if Necessary
-          ↓
-13. Resolve Issue
-          ↓
-14. Re-check Readiness
-          ↓
-15. Measure Performance
+9. Re-check Readiness & Measure Baseline Performance
 ```
 
-This connects the major modules into a single operational workflow.
-
 ---
 
-# 12. Technology Stack
+# 13. Technology Stack
 
 ## Frontend
+- **React** (v19)
+- **TypeScript** (v6)
+- **Vite** (v8)
+- **Tailwind CSS** (v4)
+- **lucide-react** icons
 
-- React
-- TypeScript
-- Vite
-- Tailwind CSS
-
-## Development
-
-- Visual Studio Code
-- Git
-- GitHub
-
-## Deployment
-
-- Vercel
-
-## Data
-
-- Mock/demo operational data
-- Client-side application state
-- Local browser persistence where applicable
+## Architecture & Data
+- **Client-Side State Management**: React Context (`AppContext`, `useApp`)
+- **Deterministic Calculation Engine**: `src/services/aiEngine.ts`
+- **Client-Side SLA Escalation Engine**: `src/services/slaEngine.ts`
+- **Data Model**: Structured TypeScript interfaces (`src/types/index.ts`)
+- **Persistence**: Browser `localStorage`
 
 ---
 
-# 13. Architecture
-
-The current prototype follows a frontend-focused architecture:
+# 14. Architecture
 
 ```text
 ┌────────────────────────────────────────┐
@@ -473,19 +335,23 @@ The current prototype follows a frontend-focused architecture:
 │ Alerts & Escalation                    │
 │ Failure Test Center                    │
 │ Baseline & Performance                 │
-│ Mock Data                               │
+│ Mock Data                              │
 └───────────────────┬────────────────────┘
                     │
                     ↓
 ┌────────────────────────────────────────┐
-│       Readiness Analysis Engine         │
+│       Readiness Analysis Engine        │
+│       (`src/services/aiEngine.ts`)     │
 │                                        │
-│ Patient Readiness                      │
-│ Staff Readiness                        │
-│ Equipment Readiness                    │
-│ Sterile Supply Readiness               │
-│ Blocker Detection                      │
-│ Idle-Time Calculation                  │
+│ Blocker Detection & Idle-Time Calc     │
+└───────────────────┬────────────────────┘
+                    │
+                    ↓
+┌────────────────────────────────────────┐
+│      SLA & Time-Decay Escalation       │
+│      (`src/services/slaEngine.ts`)     │
+│                                        │
+│ 15m Decay Rules & History Logging      │
 └───────────────────┬────────────────────┘
                     │
                     ↓
@@ -493,348 +359,146 @@ The current prototype follows a frontend-focused architecture:
 │       Operational Workflow             │
 │                                        │
 │ Alerts → Assignment → Escalation       │
-│             → Resolution               │
-│                                        │
-│ Baseline → Performance Measurement     │
+│    → Resolution → Re-check Readiness   │
 └────────────────────────────────────────┘
 ```
 
 ---
 
-# 14. Data Model
+# 15. Data Model
 
-The prototype represents operational information around theatre sessions, including:
+The project represents operational healthcare data through formal TypeScript schemas including:
 
-```text
-Theatre
-Session
-Patient
-Staff
-Equipment
-Sterile Supplies
-Readiness Times
-Delay Information
-Alerts
-Owners
-Escalation Status
-Performance Metrics
-```
+- Theatre
+- Session
+- Patient
+- Staff
+- Equipment
+- Sterile Supplies
+- Readiness Times
+- Delay Information
+- Alerts
+- Owners
+- SLA State
+- Escalation Status
+- Escalation History
+- Failure Test Cases
+- Performance Metrics
 
-The application uses demonstration/mock information rather than real hospital records.
+*The project uses synthetic mock operational data stored locally in browser state.*
 
 ---
 
-# 15. Project Status
+# 16. Project Status
 
 ## Core Functionality
-
-- [x] Problem definition
-- [x] Proposed solution
-- [x] Theatre schedule
-- [x] Patient readiness
-- [x] Staff readiness
-- [x] Equipment readiness
-- [x] Sterile supply readiness
-- [x] Readiness synchronization
-- [x] Blocker identification
+- [x] Problem definition & solution scope
+- [x] Theatre schedule & session management
+- [x] 4 Resource readiness domains (Patient, Staff, Equipment, Sterile Supplies)
+- [x] Readiness synchronization engine
+- [x] Primary blocker identification
 - [x] Avoidable idle-time calculation
-- [x] Readiness status
-- [x] Readiness score
+- [x] OR Readiness score (0–100%)
 - [x] Operational recommendations
 - [x] Re-check readiness workflow
 
-## Operational Management
-
-- [x] Alerts
-- [x] Alert priorities
-- [x] Issue ownership
-- [x] Due times
-- [x] Follow-up information
-- [x] Escalation workflow
-- [x] Resolution workflow
+## Operational Management & SLA
+- [x] Formal TypeScript data schema
+- [x] Stateful alert/escalation tracking
+- [x] SLA time-based escalation (15m intervals: Normal → Warning → Urgent → Escalated)
+- [x] Escalation history tracking with timestamps and reasons
+- [x] Issue owner assignment
+- [x] Due times & countdown timers
+- [x] Manual "Re-check SLA" action
+- [x] Resolution workflow (stops SLA decay)
 
 ## Failure Testing
+- [x] Deterministic failure test suite (TEST-001 to TEST-005)
+- [x] TEST-001 Patient Transit Delay
+- [x] TEST-002 Missing Autoclave Equipment Batch
+- [x] TEST-003 Staff Not Ready
+- [x] TEST-004 Sterile Supplies Delayed
+- [x] TEST-005 All Resources Ready (Positive Control)
+- [x] Expected vs actual assertion comparison
+- [x] PASS/FAIL test reporting & summary runner
 
-- [x] Equipment unavailable scenario
-- [x] Staff not ready scenario
-- [x] Patient transfer delay scenario
-- [x] Sterile supply delay scenario
-
-## Performance
-
-- [x] Baseline idle-time measurement
-- [x] OR ReadySync idle-time measurement
-- [x] Minutes saved
-- [x] Improvement percentage
-- [x] Performance dashboard
-
-## Data & Prototype
-
-- [x] Mock operational data
-- [x] Client-side state management
-- [x] Local persistence where applicable
-- [x] Responsive interface
-- [x] GitHub repository
-- [x] Vercel deployment
+## Performance & Quality
+- [x] Baseline vs synchronized performance comparison
+- [x] Minutes saved & percentage improvement calculations
+- [x] Zero TypeScript errors (`npm run build` passing)
+- [x] Clean linter compliance (`npm run lint` passing with 0 warnings, 0 errors)
 
 ---
 
-# 16. Testing Approach
+# 17. Testing Approach
 
-The project should be validated using both normal and failure scenarios.
+The project is validated using:
 
-## Normal Readiness
-
-```text
-All required resources ready before scheduled start
-        ↓
-READY
-        ↓
-0 avoidable idle minutes
-```
-
-## Single Resource Delay
-
-```text
-One required resource becomes ready after scheduled start
-        ↓
-DELAYED
-        ↓
-Blocker identified
-        ↓
-Idle time calculated
-```
-
-## Multiple Resource Delays
-
-```text
-Multiple resources delayed
-        ↓
-Latest required readiness time identified
-        ↓
-Primary blocker determined
-        ↓
-Idle time calculated
-```
-
-## Ambiguous Case
-
-```text
-Insufficient information
-        ↓
-Human review required
-```
+1. **Deterministic Test Suite (TEST-001 to TEST-005)**: Evaluates patient transit delay, missing autoclave batch, staff delay, sterile supply hold, and all-resources-ready positive control against expected assertions.
+2. **Interactive Failure Injection**: Synthetic scenario runners in the Failure Test Center.
+3. **Build & Lint Verification**:
+   - `npm run build` → Successful production bundle compilation (0 errors).
+   - `npm run lint` → 0 warnings and 0 errors via `oxlint`.
 
 ---
 
-# 17. Important Scope and Limitations
+# 18. Important Scope and Limitations
 
 OR ReadySync is an **academic software prototype**.
 
 It currently:
 
 - Uses mock/demo operational data.
-- Does not connect to real hospital systems.
-- Does not use real patient information.
-- Does not provide clinical decision-making.
+- Does not connect to real hospital servers or external APIs.
+- Does not use real patient health records (HIPAA synthetic data only).
+- Does not provide clinical decision-making or medical diagnoses.
 - Does not replace clinical or hospital staff.
-- Does not integrate with real hospital scheduling systems.
-- Does not provide production healthcare authentication.
-- Uses rule-based operational readiness analysis.
-
-The project demonstrates the proposed synchronization and operational workflow rather than claiming production hospital deployment.
+- Operates 100% on the client side via React and `localStorage`.
 
 ---
 
-# 18. Rule-Based Analysis
-
-The readiness analysis in this prototype is based on deterministic rules and calculations.
-
-It should therefore be described as:
-
-**Operational Readiness Analysis Engine**
-
-rather than claiming that the application uses a machine-learning model or generative AI.
-
-The project does not include an AI chatbot.
-
----
-
-# 19. Future Enhancements
-
-Possible future enhancements include:
-
-- Secure backend database
-- Production authentication
-- Role-based access control
-- Real-time hospital system integration
-- Hospital scheduling integration
-- Staff roster integration
-- Equipment tracking integration
-- Real-time notifications
-- SMS/email escalation
-- Audit logging
-- Historical analytics
-- Predictive delay modelling
-- Advanced analytics
-- Healthcare security and privacy controls
-
-These enhancements would be required before considering deployment in a real healthcare environment.
-
----
-
-# 20. Academic Project Scope
-
-OR ReadySync demonstrates a software-based approach to improving operating-room readiness coordination.
-
-The project focuses on:
-
-```text
-Readiness Tracking
-       +
-Synchronization
-       +
-Blocker Detection
-       +
-Idle-Time Measurement
-       +
-Alert Management
-       +
-Escalation
-       +
-Performance Evaluation
-```
-
-The intended outcome is to provide better visibility into readiness blockers and demonstrate how improved coordination can reduce avoidable theatre idle time.
-
----
-
-# 21. Running the Project Locally
+# 19. Running the Project Locally
 
 ## Clone the repository
-
 ```bash
 git clone https://github.com/Amirdhadharshini/ORReadySync.git
-```
-
-## Open the project
-
-```bash
 cd ORReadySync
 ```
 
 ## Install dependencies
-
 ```bash
 npm install
 ```
 
 ## Start the development server
-
 ```bash
 npm run dev
 ```
 
-The application will normally be available at:
+Available at `http://localhost:5173`.
 
-```text
-http://localhost:5173
-```
-
----
-
-# 22. Production Build
-
-Create a production build:
-
+## Production Build & Linting
 ```bash
 npm run build
-```
-
-Preview the production build:
-
-```bash
-npm run preview
+npm run lint
 ```
 
 ---
 
-# 23. Deployment
-
-The project is maintained in GitHub and deployed using Vercel.
+# 20. Deployment
 
 Repository:
-
 ```text
 https://github.com/Amirdhadharshini/ORReadySync
 ```
 
-The application uses Vite for frontend development and production builds.
-
----
-
-# 24. Evaluation Summary
-
-OR ReadySync is designed to satisfy the main requirements of the operating-room readiness synchronization problem:
-
-| Problem Requirement | Implementation |
-|---|---|
-| Theatre scheduling | Theatre Schedule |
-| Patient readiness | Readiness Synchronizer |
-| Staff readiness | Readiness Synchronizer |
-| Equipment readiness | Readiness Synchronizer |
-| Sterile supplies | Readiness Synchronizer |
-| Resource synchronization | Readiness Analysis Engine |
-| Blocker identification | Readiness Analysis |
-| Idle-time calculation | Readiness Engine |
-| Failure handling | Failure Test Center |
-| Alert management | Alerts & Escalation |
-| Ownership | Alert workflow |
-| Due time | Alert workflow |
-| Escalation | Alert workflow |
-| Resolution | Alert workflow |
-| Baseline comparison | Baseline & Performance |
-| Minutes saved | Performance calculation |
-| Improvement percentage | Performance calculation |
-| Error/ambiguous cases | Operational analysis |
-| End-to-end workflow | Integrated prototype |
-
----
-
-# 25. Project Development Stage
-
-The project was developed incrementally from:
-
-```text
-Problem Identification
-        ↓
-System Design
-        ↓
-UI Prototype
-        ↓
-Readiness Synchronization
-        ↓
-Blocker Detection
-        ↓
-Failure Handling
-        ↓
-Alerts & Escalation
-        ↓
-Performance Measurement
-        ↓
-Testing & Refinement
-        ↓
-Deployment
-```
-
-The current application represents a functional academic prototype rather than a production hospital information system.
+The application is deployed on Vercel as a Vite React application.
 
 ---
 
 ## Author
 
-**Amirdha Dharshini**
-
+**Amirdha Dharshini**  
 Academic Project: **OR ReadySync**
 
 ---
