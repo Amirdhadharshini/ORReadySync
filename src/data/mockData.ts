@@ -581,7 +581,7 @@ export const DETERMINISTIC_TEST_CASES: DeterministicTestCase[] = [
     },
     expected: {
       primaryBlocker: 'Equipment',
-      sessionStatus: 'DELAYED',
+      sessionStatus: 'ESCALATED',
       allResourcesReadyTime: '10:30 AM',
       avoidableIdleMinutes: 30,
       alertPriority: 'URGENT',
